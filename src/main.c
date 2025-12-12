@@ -19,6 +19,31 @@ static const size_t AUTHORIZED_UID_LEN = 4;
 
 static const char *TAG = "MAIN";
 
+static void log_uid_as_c_array_once(const uint8_t *uid, uint8_t uid_len) {
+    static bool logged = false;
+    if (logged) {
+        return;
+    }
+    logged = true;
+
+    if (uid == NULL || uid_len == 0) {
+        ESP_LOGW(TAG, "First UID was empty; nothing to log");
+        return;
+    }
+
+    char line[128] = {0};
+    int written = snprintf(line, sizeof(line), "static const uint8_t AUTHORIZED_UID[] = {");
+    for (uint8_t i = 0; i < uid_len && written > 0 && written < (int)sizeof(line); i++) {
+        written += snprintf(line + written, sizeof(line) - written, "%s0x%02X", (i == 0) ? "" : ", ", uid[i]);
+    }
+    if (written > 0 && written < (int)sizeof(line)) {
+        (void)snprintf(line + written, sizeof(line) - written, "}; // len=%u", (unsigned)uid_len);
+    }
+
+    ESP_LOGI(TAG, "Copy/paste this UID into main.c:");
+    ESP_LOGI(TAG, "%s", line);
+}
+
 void app_main(void) {
     // Initialize LED GPIO
     gpio_reset_pin(LED_GPIO);
@@ -48,6 +73,8 @@ void app_main(void) {
         if (pn532_read_passive_target(uid, &uid_len)) {
             ESP_LOGI(TAG, "Card detected! UID:");
             ESP_LOG_BUFFER_HEX(TAG, uid, uid_len);
+
+            log_uid_as_c_array_once(uid, uid_len);
             
             // Check if UID matches authorized card
             if (uid_len == AUTHORIZED_UID_LEN && 

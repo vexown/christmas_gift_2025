@@ -32,6 +32,9 @@
 
 static const char *TAG = "PN532";
 
+// Enable this for detailed debug output
+#define PN532_DEBUG_VERBOSE 0  // Set to 1 for detailed logs
+
 #define PN532_TIMEOUT_MS 1000
 
 // ACK frame
@@ -101,31 +104,41 @@ esp_err_t pn532_wakeup(void) {
     return ESP_OK;
 }
 
-// Check if PN532 is ready (improved version)
+// Check if PN532 is ready (improved version with detailed debug)
 esp_err_t pn532_wait_ready(uint32_t timeout_ms) {
     uint32_t start = xTaskGetTickCount();
     uint32_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
     
     ESP_LOGI(TAG, "Waiting for PN532 ready status...");
     
+    uint32_t poll_count = 0;
+    
     while ((xTaskGetTickCount() - start) < timeout_ticks) {
         uint8_t status;
         
         esp_err_t ret = i2c_master_receive(dev_handle, &status, 1, 100);
         
+        poll_count++;
+        
         if (ret == ESP_OK) {
-            ESP_LOGD(TAG, "Read status byte: 0x%02X", status);
+            ESP_LOGD(TAG, "[Poll #%lu] Status byte: 0x%02X %s", 
+                     poll_count, status, 
+                     status == PN532_I2C_READY ? "(READY!)" : "(busy)");
             
             if (status == PN532_I2C_READY) {
-                ESP_LOGI(TAG, "✓ PN532 is ready!");
+                ESP_LOGI(TAG, "✓ PN532 is ready! (took %lu polls, %lu ms)", 
+                         poll_count, 
+                         (xTaskGetTickCount() - start) * portTICK_PERIOD_MS);
                 return ESP_OK;
             }
+        } else {
+            ESP_LOGD(TAG, "[Poll #%lu] I2C error: %s", poll_count, esp_err_to_name(ret));
         }
         
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     
-    ESP_LOGE(TAG, "Timeout waiting for ready");
+    ESP_LOGE(TAG, "Timeout waiting for ready (polled %lu times)", poll_count);
     return ESP_ERR_TIMEOUT;
 }
 
@@ -163,8 +176,10 @@ esp_err_t pn532_write_command(const uint8_t *cmd, uint8_t cmd_len) {
     frame[idx++] = checksum;
     frame[idx++] = PN532_POSTAMBLE;
     
-    ESP_LOGI(TAG, "Sending command (0x%02X), %d bytes total:", cmd[0], idx);
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, frame, idx, ESP_LOG_INFO);
+    if (PN532_DEBUG_VERBOSE) {
+        ESP_LOGI(TAG, "Sending command (0x%02X), %d bytes total:", cmd[0], idx);
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, frame, idx, ESP_LOG_INFO);
+    }
     
     esp_err_t ret = i2c_master_transmit(dev_handle, frame, idx, PN532_TIMEOUT_MS);
     
@@ -180,8 +195,10 @@ esp_err_t pn532_read_data(uint8_t *buffer, uint8_t len) {
     esp_err_t ret = i2c_master_receive(dev_handle, buffer, len, PN532_TIMEOUT_MS);
     
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Read %d bytes:", len);
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, buffer, len, ESP_LOG_INFO);
+        if (PN532_DEBUG_VERBOSE) {
+            ESP_LOGI(TAG, "Read %d bytes:", len);
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, buffer, len, ESP_LOG_INFO);
+        }
     } else {
         ESP_LOGE(TAG, "I2C receive failed: %s", esp_err_to_name(ret));
     }

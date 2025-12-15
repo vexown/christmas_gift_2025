@@ -3,19 +3,32 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "nvs_flash.h"
+#include "esp_http_server.h"
 #include "pn532.h"
 #include "driver/i2c.h"
 
 // Application Configuration
 #define I2C_MASTER_SDA_IO    21
 #define I2C_MASTER_SCL_IO    22
-#define I2C_MASTER_FREQ_HZ   100000    // 100kHz
+#define I2C_MASTER_FREQ_HZ   100000
 #define PN532_RST_PIN        4
 
 #define SCAN_INTERVAL_MS     500
 #define CARD_REMOVE_DELAY_MS 2000
 
+// WiFi AP Configuration
+#define WIFI_AP_SSID         "ESP32-NFC-Door"
+#define WIFI_AP_PASSWORD     "12345678"
+#define WIFI_AP_CHANNEL      1
+#define WIFI_AP_MAX_CONN     4
+
 static const char *TAG = "NFC_APP";
+
+// Door state
+static bool door_open = false;
 
 // Authorized UIDs (add your allowed cards here)
 typedef struct {
@@ -34,26 +47,265 @@ static const authorized_card_t authorized_cards[] = {
 
 #define NUM_AUTHORIZED_CARDS (sizeof(authorized_cards) / sizeof(authorized_card_t))
 
-// Dummy function to simulate door opening
-static void open_door(const char *card_name) {
+// Forward declarations
+static esp_err_t wifi_init_softap(void);
+static httpd_handle_t start_webserver(void);
+
+// Door control functions
+static void open_door(const char *reason) {
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔══════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║          ACCESS GRANTED!             ║");
-    ESP_LOGI(TAG, "║         Opening door...              ║");
+    ESP_LOGI(TAG, "║          OPENING DOOR!               ║");
     ESP_LOGI(TAG, "╚══════════════════════════════════════╝");
-    ESP_LOGI(TAG, "Card: %s", card_name);
+    ESP_LOGI(TAG, "Reason: %s", reason);
     
-    // TODO: Add your actual door control logic here
-    // Examples:
+    door_open = true;
+    
+    // TODO: Add actual door control logic
     // - Activate relay/solenoid
-    // - Send signal to door controller
-    // - Log access event to database
+    // - GPIO output HIGH
     
-    // Simulate door staying open for 5 seconds
-    ESP_LOGI(TAG, "Door will remain open for 5 seconds...");
-    vTaskDelay(pdMS_TO_TICKS(5000));
-    ESP_LOGI(TAG, "Door closed.");
+    ESP_LOGI(TAG, "Door is now OPEN");
     ESP_LOGI(TAG, "");
+}
+
+static void close_door(const char *reason) {
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║          CLOSING DOOR!               ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════╝");
+    ESP_LOGI(TAG, "Reason: %s", reason);
+    
+    door_open = false;
+    
+    // TODO: Add actual door control logic
+    // - Deactivate relay/solenoid
+    // - GPIO output LOW
+    
+    ESP_LOGI(TAG, "Door is now CLOSED");
+    ESP_LOGI(TAG, "");
+}
+
+// HTTP Handlers
+static esp_err_t root_get_handler(httpd_req_t *req) {
+    const char *html = 
+        "<!DOCTYPE html>"
+        "<html>"
+        "<head>"
+        "  <meta charset='UTF-8'>"
+        "  <meta name='viewport' content='width=device-width, initial-scale=1.0'>"
+        "  <title>ESP32 Door Control</title>"
+        "  <style>"
+        "    body {"
+        "      font-family: Arial, sans-serif;"
+        "      text-align: center;"
+        "      margin: 50px;"
+        "      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);"
+        "      color: white;"
+        "    }"
+        "    h1 {"
+        "      font-size: 2.5em;"
+        "      margin-bottom: 20px;"
+        "    }"
+        "    .container {"
+        "      background: rgba(255, 255, 255, 0.1);"
+        "      border-radius: 20px;"
+        "      padding: 40px;"
+        "      max-width: 500px;"
+        "      margin: 0 auto;"
+        "      box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);"
+        "    }"
+        "    .status {"
+        "      font-size: 1.8em;"
+        "      margin: 30px 0;"
+        "      padding: 20px;"
+        "      border-radius: 10px;"
+        "      background: rgba(255, 255, 255, 0.2);"
+        "    }"
+        "    .button {"
+        "      font-size: 1.5em;"
+        "      padding: 20px 40px;"
+        "      margin: 15px;"
+        "      border: none;"
+        "      border-radius: 10px;"
+        "      cursor: pointer;"
+        "      color: white;"
+        "      font-weight: bold;"
+        "      transition: all 0.3s;"
+        "      box-shadow: 0 4px 15px 0 rgba(0, 0, 0, 0.2);"
+        "    }"
+        "    .button:hover {"
+        "      transform: translateY(-3px);"
+        "      box-shadow: 0 6px 20px 0 rgba(0, 0, 0, 0.3);"
+        "    }"
+        "    .button:active {"
+        "      transform: translateY(-1px);"
+        "    }"
+        "    .open-btn {"
+        "      background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);"
+        "    }"
+        "    .close-btn {"
+        "      background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);"
+        "    }"
+        "    .info {"
+        "      margin-top: 30px;"
+        "      font-size: 0.9em;"
+        "      opacity: 0.8;"
+        "    }"
+        "  </style>"
+        "</head>"
+        "<body>"
+        "  <div class='container'>"
+        "    <h1>🚪 Door Control</h1>"
+        "    <div class='status'>Door Status: <span id='status'>%s</span></div>"
+        "    <form action='/open' method='get' style='display:inline'>"
+        "      <button type='submit' class='button open-btn'>🔓 OPEN DOOR</button>"
+        "    </form>"
+        "    <br>"
+        "    <form action='/close' method='get' style='display:inline'>"
+        "      <button type='submit' class='button close-btn'>🔒 CLOSE DOOR</button>"
+        "    </form>"
+        "    <div class='info'>"
+        "      <p>ESP32 NFC Access Control System</p>"
+        "      <p>Tap an NFC card or use buttons above</p>"
+        "    </div>"
+        "  </div>"
+        "</body>"
+        "</html>";
+    
+    char response[2048];
+    snprintf(response, sizeof(response), html, door_open ? "🟢 OPEN" : "🔴 CLOSED");
+    
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t open_door_handler(httpd_req_t *req) {
+    open_door("Web interface button");
+    
+    // Redirect back to main page
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t close_door_handler(httpd_req_t *req) {
+    close_door("Web interface button");
+    
+    // Redirect back to main page
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+// WiFi event handler
+static void wifi_event_handler(void* arg, esp_event_base_t event_base,
+                               int32_t event_id, void* event_data) {
+    if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+        wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
+        ESP_LOGI(TAG, "Client connected, MAC: %02x:%02x:%02x:%02x:%02x:%02x, AID: %d",
+                 event->mac[0], event->mac[1], event->mac[2], event->mac[3], event->mac[4], event->mac[5], event->aid);
+    } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+        wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
+        ESP_LOGI(TAG, "Client disconnected, MAC: %02x:%02x:%02x:%02x:%02x:%02x, AID: %d",
+                 event->mac[0], event->mac[1], event->mac[2], event->mac[3], event->mac[4], event->mac[5], event->aid);
+    }
+}
+
+// Initialize WiFi in AP mode
+static esp_err_t wifi_init_softap(void) {
+    ESP_LOGI(TAG, "Initializing WiFi AP...");
+    
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_ap();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                        ESP_EVENT_ANY_ID,
+                                                        &wifi_event_handler,
+                                                        NULL,
+                                                        NULL));
+
+    wifi_config_t wifi_config = {
+        .ap = {
+            .ssid = WIFI_AP_SSID,
+            .ssid_len = strlen(WIFI_AP_SSID),
+            .channel = WIFI_AP_CHANNEL,
+            .password = WIFI_AP_PASSWORD,
+            .max_connection = WIFI_AP_MAX_CONN,
+            .authmode = WIFI_AUTH_WPA2_PSK,
+            .pmf_cfg = {
+                .required = false,
+            },
+        },
+    };
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║      WiFi AP Started Successfully    ║");
+    ESP_LOGI(TAG, "╠══════════════════════════════════════╣");
+    ESP_LOGI(TAG, "║ SSID:     %-27s║", WIFI_AP_SSID);
+    ESP_LOGI(TAG, "║ Password: %-27s║", WIFI_AP_PASSWORD);
+    ESP_LOGI(TAG, "║ IP:       192.168.4.1                ║");
+    ESP_LOGI(TAG, "║ URL:      http://192.168.4.1         ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════╝");
+    ESP_LOGI(TAG, "");
+
+    return ESP_OK;
+}
+
+// Start HTTP server
+static httpd_handle_t start_webserver(void) {
+    httpd_handle_t server = NULL;
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.lru_purge_enable = true;
+
+    ESP_LOGI(TAG, "Starting HTTP server on port %d", config.server_port);
+    
+    if (httpd_start(&server, &config) == ESP_OK) {
+        // Root page
+        httpd_uri_t root = {
+            .uri       = "/",
+            .method    = HTTP_GET,
+            .handler   = root_get_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &root);
+
+        // Open door endpoint
+        httpd_uri_t open = {
+            .uri       = "/open",
+            .method    = HTTP_GET,
+            .handler   = open_door_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &open);
+
+        // Close door endpoint
+        httpd_uri_t close = {
+            .uri       = "/close",
+            .method    = HTTP_GET,
+            .handler   = close_door_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &close);
+
+        ESP_LOGI(TAG, "✓ HTTP server started successfully");
+        return server;
+    }
+
+    ESP_LOGE(TAG, "Failed to start HTTP server");
+    return NULL;
 }
 
 // Helper function to check if UID is authorized
@@ -101,11 +353,30 @@ void app_main(void)
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔══════════════════════════════════════╗");
     ESP_LOGI(TAG, "║   PN532 NFC Access Control System   ║");
+    ESP_LOGI(TAG, "║   with WiFi Web Interface           ║");
     ESP_LOGI(TAG, "║   ESP-IDF v%s                  ║", esp_get_idf_version());
     ESP_LOGI(TAG, "╚══════════════════════════════════════╝");
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "Authorized cards: %d", NUM_AUTHORIZED_CARDS);
     ESP_LOGI(TAG, "");
+    
+    // Initialize NVS (required for WiFi)
+    ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+    
+    // Initialize WiFi AP
+    wifi_init_softap();
+    
+    // Start web server
+    httpd_handle_t server = start_webserver();
+    if (server == NULL) {
+        ESP_LOGE(TAG, "Failed to start web server");
+        return;
+    }
     
     // Initialize PN532
     ret = pn532_init(I2C_NUM_0, I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO, 
@@ -159,15 +430,13 @@ void app_main(void)
     }
     
     ESP_LOGI(TAG, "\n╔══════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║   ✓✓✓ ALL TESTS PASSED! ✓✓✓        ║");
-    ESP_LOGI(TAG, "║   PN532 is ready for NFC operations  ║");
+    ESP_LOGI(TAG, "║   ✓✓✓ ALL SYSTEMS READY! ✓✓✓       ║");
     ESP_LOGI(TAG, "╚══════════════════════════════════════╝\n");
     
-    // Main application loop - NFC card scanning
+    // Main application loop
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "NFC Access Control System Ready");
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "Present an NFC card to check access...\n");
+    ESP_LOGI(TAG, "System Ready - Waiting for NFC cards...");
+    ESP_LOGI(TAG, "========================================\n");
     
     uint8_t uid[PN532_MAX_UID_LENGTH];
     uint8_t uid_len = 0;
@@ -191,43 +460,29 @@ void app_main(void)
                 // Authorized card - open door
                 open_door(card_name);
             } else {
-                // Unauthorized card - deny access
+                // Unauthorized card
                 ESP_LOGW(TAG, "");
                 ESP_LOGW(TAG, "╔══════════════════════════════════════╗");
                 ESP_LOGW(TAG, "║          ACCESS DENIED!              ║");
-                ESP_LOGW(TAG, "║      Unauthorized card detected      ║");
                 ESP_LOGW(TAG, "╚══════════════════════════════════════╝");
                 ESP_LOGW(TAG, "");
-                
-                // TODO: Add your access denied logic here
-                // Examples:
-                // - Sound alarm/buzzer
-                // - Log unauthorized access attempt
-                // - Send notification
-                
-                // Wait a bit before scanning again
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
             
-            // Wait for card to be removed
             ESP_LOGI(TAG, "Remove card to scan again...\n");
             vTaskDelay(pdMS_TO_TICKS(CARD_REMOVE_DELAY_MS));
             
-        } else if (ret == ESP_ERR_NOT_FOUND) {
-            // No card present (expected during scanning)
-            // Don't log anything to reduce spam
-        } else if (ret == ESP_ERR_TIMEOUT) {
-            // Timeout waiting for card (also expected)
-        } else {
-            // Actual error
+        } else if (ret != ESP_ERR_NOT_FOUND && ret != ESP_ERR_TIMEOUT) {
             ESP_LOGE(TAG, "Error reading card: %s", esp_err_to_name(ret));
         }
         
-        // Scan at regular intervals
         vTaskDelay(pdMS_TO_TICKS(SCAN_INTERVAL_MS));
     }
     
 cleanup:
     pn532_deinit();
+    if (server) {
+        httpd_stop(server);
+    }
     ESP_LOGE(TAG, "Application terminated");
 }

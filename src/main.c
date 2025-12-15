@@ -17,6 +17,57 @@
 
 static const char *TAG = "NFC_APP";
 
+// Authorized UIDs (add your allowed cards here)
+typedef struct {
+    uint8_t uid[PN532_MAX_UID_LENGTH];
+    uint8_t uid_len;
+    const char *name;
+} authorized_card_t;
+
+static const authorized_card_t authorized_cards[] = {
+    // Example UIDs - replace with your actual card UIDs
+    { .uid = {0x04, 0x5A, 0x3B, 0x2A}, .uid_len = 4, .name = "Master Card" },
+    { .uid = {0x12, 0x34, 0x56, 0x78}, .uid_len = 4, .name = "User Card 1" },
+    { .uid = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00}, .uid_len = 7, .name = "User Card 2" },
+    // Add more authorized cards here
+};
+
+#define NUM_AUTHORIZED_CARDS (sizeof(authorized_cards) / sizeof(authorized_card_t))
+
+// Dummy function to simulate door opening
+static void open_door(const char *card_name) {
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║          ACCESS GRANTED!             ║");
+    ESP_LOGI(TAG, "║         Opening door...              ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════╝");
+    ESP_LOGI(TAG, "Card: %s", card_name);
+    
+    // TODO: Add your actual door control logic here
+    // Examples:
+    // - Activate relay/solenoid
+    // - Send signal to door controller
+    // - Log access event to database
+    
+    // Simulate door staying open for 5 seconds
+    ESP_LOGI(TAG, "Door will remain open for 5 seconds...");
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    ESP_LOGI(TAG, "Door closed.");
+    ESP_LOGI(TAG, "");
+}
+
+// Helper function to check if UID is authorized
+static bool is_authorized(const uint8_t *uid, uint8_t uid_len, const char **card_name) {
+    for (int i = 0; i < NUM_AUTHORIZED_CARDS; i++) {
+        if (uid_len == authorized_cards[i].uid_len &&
+            memcmp(uid, authorized_cards[i].uid, uid_len) == 0) {
+            *card_name = authorized_cards[i].name;
+            return true;
+        }
+    }
+    return false;
+}
+
 // Helper function to print UID in a nice format
 static void print_uid(const uint8_t *uid, uint8_t uid_len) {
     printf("Card UID: ");
@@ -49,9 +100,11 @@ void app_main(void)
     // Print banner
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔══════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║   PN532 NFC Reader Application      ║");
+    ESP_LOGI(TAG, "║   PN532 NFC Access Control System   ║");
     ESP_LOGI(TAG, "║   ESP-IDF v%s                  ║", esp_get_idf_version());
     ESP_LOGI(TAG, "╚══════════════════════════════════════╝");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "Authorized cards: %d", NUM_AUTHORIZED_CARDS);
     ESP_LOGI(TAG, "");
     
     // Initialize PN532
@@ -112,9 +165,9 @@ void app_main(void)
     
     // Main application loop - NFC card scanning
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "Starting NFC Card Detection Loop");
+    ESP_LOGI(TAG, "NFC Access Control System Ready");
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "Place an NFC card near the reader\n");
+    ESP_LOGI(TAG, "Present an NFC card to check access...\n");
     
     uint8_t uid[PN532_MAX_UID_LENGTH];
     uint8_t uid_len = 0;
@@ -131,14 +184,30 @@ void app_main(void)
             
             // Print UID
             print_uid(uid, uid_len);
-            printf("\n");
             
-            // TODO: Add your card processing logic here
-            // Examples:
-            // - Store UID in database
-            // - Grant/deny access
-            // - Read/write NDEF messages
-            // - Authenticate blocks
+            // Check authorization
+            const char *card_name;
+            if (is_authorized(uid, uid_len, &card_name)) {
+                // Authorized card - open door
+                open_door(card_name);
+            } else {
+                // Unauthorized card - deny access
+                ESP_LOGW(TAG, "");
+                ESP_LOGW(TAG, "╔══════════════════════════════════════╗");
+                ESP_LOGW(TAG, "║          ACCESS DENIED!              ║");
+                ESP_LOGW(TAG, "║      Unauthorized card detected      ║");
+                ESP_LOGW(TAG, "╚══════════════════════════════════════╝");
+                ESP_LOGW(TAG, "");
+                
+                // TODO: Add your access denied logic here
+                // Examples:
+                // - Sound alarm/buzzer
+                // - Log unauthorized access attempt
+                // - Send notification
+                
+                // Wait a bit before scanning again
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
             
             // Wait for card to be removed
             ESP_LOGI(TAG, "Remove card to scan again...\n");

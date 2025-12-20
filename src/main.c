@@ -20,7 +20,7 @@
 #define MOTOR_DRIVER_L_EN_PIN   26
 #define MOTOR_DRIVER_R_EN_PIN   25
 #define ENDSTOP_CHECK_PIN       19
-#define ENDSTOP_GND_PIN         5
+#define ENDSTOP_HIGH_PIN         5
 
 /* I2C Configuration */
 #define I2C_MASTER_FREQ_HZ   100000
@@ -415,7 +415,7 @@ static void motor_driver_init(void) {
                         (1ULL << MOTOR_DRIVER_RPWM_PIN) |
                         (1ULL << MOTOR_DRIVER_L_EN_PIN) |
                         (1ULL << MOTOR_DRIVER_R_EN_PIN) |
-                        (1ULL << ENDSTOP_GND_PIN),
+                        (1ULL << ENDSTOP_HIGH_PIN),
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .pull_up_en = GPIO_PULLUP_DISABLE,
     };
@@ -434,7 +434,9 @@ static void motor_driver_init(void) {
     gpio_set_level(MOTOR_DRIVER_RPWM_PIN, 0);
     gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
     gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
-    gpio_set_level(ENDSTOP_GND_PIN, 0);
+
+    // Set endstop high pin to high
+    gpio_set_level(ENDSTOP_HIGH_PIN, 1);
     
     ESP_LOGI(TAG, "✓ Motor driver pins initialized");
 }

@@ -10,16 +10,25 @@
 #include "pn532.h"
 #include "driver/i2c.h"
 
-// Application Configuration
-#define I2C_MASTER_SDA_IO    21
-#define I2C_MASTER_SCL_IO    22
-#define I2C_MASTER_FREQ_HZ   100000
-#define PN532_RST_PIN        4
+/* Pin Mapping */
+#define I2C_MASTER_SDA_IO       21
+#define I2C_MASTER_SCL_IO       22
+#define PN532_RST_PIN           4
+#define MOTOR_DRIVER_LPWM_PIN   14
+#define MOTOR_DRIVER_RPWM_PIN   13
+#define MOTOR_DRIVER_L_EN_PIN   26
+#define MOTOR_DRIVER_R_EN_PIN   25
+#define ENDSTOP_CHECK_PIN       19
+#define ENDSTOP_GND_PIN         5
 
+/* I2C Configuration */
+#define I2C_MASTER_FREQ_HZ   100000
+
+/* RFID Configuration */
 #define SCAN_INTERVAL_MS     500
 #define CARD_REMOVE_DELAY_MS 2000
 
-// WiFi AP Configuration
+/* WiFi AP Configuration */
 #define WIFI_AP_SSID         "ESP32-NFC-Door"
 #define WIFI_AP_PASSWORD     "12345678"
 #define WIFI_AP_CHANNEL      1

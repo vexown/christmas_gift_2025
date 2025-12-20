@@ -60,15 +60,19 @@ static httpd_handle_t start_webserver(void);
 
 // Door control functions
 static void open_door(const char *reason) {
+    // Check if door is already open
+    if (door_open) {
+        ESP_LOGI(TAG, "ℹ️  Door is already OPEN, ignoring open request");
+        return;
+    }
+    
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔══════════════════════════════════════╗");
     ESP_LOGI(TAG, "║          OPENING DOOR!               ║");
     ESP_LOGI(TAG, "╚══════════════════════════════════════╝");
     ESP_LOGI(TAG, "Reason: %s", reason);
     
-    door_open = true;
-    
-    /* raise the door until endstop is hit */
+    /* raise the door until endstop is released, then continue for 2 more seconds */
     // Enable both motor drivers
     gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 1);
     gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 1);
@@ -77,42 +81,61 @@ static void open_door(const char *reason) {
     gpio_set_level(MOTOR_DRIVER_LPWM_PIN, 1);
     gpio_set_level(MOTOR_DRIVER_RPWM_PIN, 0);
     
-    // Poll endstop until triggered (active high)
+    // Wait until endstop is released (goes from HIGH to LOW)
     uint32_t timeout_ms = 5000;  // 5 second timeout safety
     uint32_t start_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
-    bool timeout_occurred = true;
+    bool endstop_released = false;
+    
+    ESP_LOGI(TAG, "Waiting for endstop to release...");
     
     while (((xTaskGetTickCount() * portTICK_PERIOD_MS) - start_time) < timeout_ms) 
     {
-        if (gpio_get_level(ENDSTOP_CHECK_PIN) == 1) 
+        if (gpio_get_level(ENDSTOP_CHECK_PIN) == 0) 
         {
-            // Endstop hit - door is fully open
-            gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
-            gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
-            timeout_occurred = false;
+            // Endstop released - door is moving upward
+            endstop_released = true;
+            ESP_LOGI(TAG, "Endstop released, opening door fully...");
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
-    if (timeout_occurred) ESP_LOGE(TAG, "Warning: Door open operation timed out!");
-    
-    // Safety: disable motor if timeout occurred
-    gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
-    gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
-    
-    ESP_LOGI(TAG, "Door is now OPEN");
-    ESP_LOGI(TAG, "");
+    if (endstop_released) 
+    {
+        // Continue moving for 0.4 more seconds to fully open
+        ESP_LOGI(TAG, "Door fully opening (0.4 second movement)...");
+        vTaskDelay(pdMS_TO_TICKS(400));
+        
+        // Safety: disable motor
+        gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
+        gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
+        
+        door_open = true;  // Update state only after successful open
+        ESP_LOGI(TAG, "Door is now OPEN");
+        ESP_LOGI(TAG, "");
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Warning: Endstop never released!");
+        gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
+        gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
+        door_open = false;  // Reset state on failure
+        return;
+    }
 }
 
 static void close_door(const char *reason) {
+    // Check if door is already closed
+    if (!door_open) {
+        ESP_LOGI(TAG, "ℹ️  Door is already CLOSED, ignoring close request");
+        return;
+    }
+    
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔══════════════════════════════════════╗");
     ESP_LOGI(TAG, "║          CLOSING DOOR!               ║");
     ESP_LOGI(TAG, "╚══════════════════════════════════════╝");
     ESP_LOGI(TAG, "Reason: %s", reason);
-    
-    door_open = false;
     
     // Enable both motor drivers
     gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 1);
@@ -122,26 +145,47 @@ static void close_door(const char *reason) {
     gpio_set_level(MOTOR_DRIVER_RPWM_PIN, 1);
     gpio_set_level(MOTOR_DRIVER_LPWM_PIN, 0);
     
-    // Poll endstop until triggered (active high) or timeout
+    // Poll endstop until triggered (goes HIGH) - door is fully closed
     uint32_t timeout_ms = 5000;  // 5 second timeout safety
     uint32_t start_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    bool endstop_hit = false;
     
-    while ((xTaskGetTickCount() * portTICK_PERIOD_MS - start_time) < timeout_ms) {
-        if (gpio_get_level(ENDSTOP_CHECK_PIN) == 1) {
+    ESP_LOGI(TAG, "Lowering door until endstop is hit...");
+    
+    while ((xTaskGetTickCount() * portTICK_PERIOD_MS - start_time) < timeout_ms) 
+    {
+        if (gpio_get_level(ENDSTOP_CHECK_PIN) == 1) 
+        {
             // Endstop hit - door is fully closed
-            gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
-            gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
+            endstop_hit = true;
+            ESP_LOGI(TAG, "Endstop hit, door fully closed!");
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
     
-    // Safety: disable motor if timeout occurred
-    gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
-    gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
-    
-    ESP_LOGI(TAG, "Door is now CLOSED");
-    ESP_LOGI(TAG, "");
+    if (endstop_hit) 
+    {
+        // Continue moving for 0.4 more seconds to fully close
+        ESP_LOGI(TAG, "Door fully closing (0.4 second movement)...");
+        vTaskDelay(pdMS_TO_TICKS(400));
+        
+        // Safety: disable motor
+        gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
+        gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
+        
+        door_open = false;  // Update state only after successful close
+        ESP_LOGI(TAG, "Door is now CLOSED");
+        ESP_LOGI(TAG, "");
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Warning: Endstop never triggered!");
+        gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
+        gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
+        door_open = true;  // Reset state on failure
+        return;
+    }
 }
 
 // HTTP Handlers
@@ -438,7 +482,10 @@ static void motor_driver_init(void) {
     // Set endstop high pin to high
     gpio_set_level(ENDSTOP_HIGH_PIN, 1);
     
-    ESP_LOGI(TAG, "✓ Motor driver pins initialized");
+    // Initialize door_open based on endstop position
+    // HIGH (1) = door closed, LOW (0) = door open
+    door_open = (gpio_get_level(ENDSTOP_CHECK_PIN) == 0);
+    ESP_LOGI(TAG, "✓ Motor driver pins initialized (door status: %s)", door_open ? "OPEN" : "CLOSED");
 }
 
 void app_main(void)

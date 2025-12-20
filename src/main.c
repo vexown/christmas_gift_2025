@@ -9,6 +9,7 @@
 #include "esp_http_server.h"
 #include "pn532.h"
 #include "driver/i2c.h"
+#include "driver/gpio.h"
 
 /* Pin Mapping */
 #define I2C_MASTER_SDA_IO       21
@@ -70,9 +71,38 @@ static void open_door(const char *reason) {
     
     door_open = true;
     
-    // TODO: Add actual door control logic
-    // - Activate relay/solenoid
-    // - GPIO output HIGH
+    /* raise the door until endstop is hit */
+    // Enable both motor drivers
+    gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 1);
+    gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 1);
+    
+    // Set LPWM high to raise door (forward direction)
+    gpio_set_level(MOTOR_DRIVER_LPWM_PIN, 1);
+    gpio_set_level(MOTOR_DRIVER_RPWM_PIN, 0);
+    
+    // Poll endstop until triggered (active high)
+    uint32_t timeout_ms = 5000;  // 5 second timeout safety
+    uint32_t start_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    bool timeout_occurred = true;
+    
+    while (((xTaskGetTickCount() * portTICK_PERIOD_MS) - start_time) < timeout_ms) 
+    {
+        if (gpio_get_level(ENDSTOP_CHECK_PIN) == 1) 
+        {
+            // Endstop hit - door is fully open
+            gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
+            gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
+            timeout_occurred = false;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    if (timeout_occurred) ESP_LOGE(TAG, "Warning: Door open operation timed out!");
+    
+    // Safety: disable motor if timeout occurred
+    gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
+    gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
     
     ESP_LOGI(TAG, "Door is now OPEN");
     ESP_LOGI(TAG, "");
@@ -87,9 +117,31 @@ static void close_door(const char *reason) {
     
     door_open = false;
     
-    // TODO: Add actual door control logic
-    // - Deactivate relay/solenoid
-    // - GPIO output LOW
+    // Enable both motor drivers
+    gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 1);
+    gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 1);
+    
+    // Set RPWM high to lower door (reverse direction)
+    gpio_set_level(MOTOR_DRIVER_RPWM_PIN, 1);
+    gpio_set_level(MOTOR_DRIVER_LPWM_PIN, 0);
+    
+    // Poll endstop until triggered (active high) or timeout
+    uint32_t timeout_ms = 5000;  // 5 second timeout safety
+    uint32_t start_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    
+    while ((xTaskGetTickCount() * portTICK_PERIOD_MS - start_time) < timeout_ms) {
+        if (gpio_get_level(ENDSTOP_CHECK_PIN) == 1) {
+            // Endstop hit - door is fully closed
+            gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
+            gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    
+    // Safety: disable motor if timeout occurred
+    gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
+    gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
     
     ESP_LOGI(TAG, "Door is now CLOSED");
     ESP_LOGI(TAG, "");
@@ -354,6 +406,42 @@ static void print_firmware_info(uint8_t ic, uint8_t ver, uint8_t rev, uint8_t su
     ESP_LOGI(TAG, "");
 }
 
+// Initialize motor driver GPIO pins
+static void motor_driver_init(void) {
+    ESP_LOGI(TAG, "Initializing motor driver pins...");
+    
+    // Configure LPWM and RPWM as outputs
+    gpio_config_t io_conf = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = (1ULL << MOTOR_DRIVER_LPWM_PIN) | 
+                        (1ULL << MOTOR_DRIVER_RPWM_PIN) |
+                        (1ULL << MOTOR_DRIVER_L_EN_PIN) |
+                        (1ULL << MOTOR_DRIVER_R_EN_PIN) |
+                        (1ULL << ENDSTOP_GND_PIN),
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+    };
+    gpio_config(&io_conf);
+    
+    // Configure endstop as input
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pin_bit_mask = (1ULL << ENDSTOP_CHECK_PIN);
+    io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    gpio_config(&io_conf);
+    
+    // Set all outputs to safe state (motors disabled)
+    gpio_set_level(MOTOR_DRIVER_LPWM_PIN, 0);
+    gpio_set_level(MOTOR_DRIVER_RPWM_PIN, 0);
+    gpio_set_level(MOTOR_DRIVER_L_EN_PIN, 0);
+    gpio_set_level(MOTOR_DRIVER_R_EN_PIN, 0);
+    gpio_set_level(ENDSTOP_GND_PIN, 0);
+    
+    ESP_LOGI(TAG, "✓ Motor driver pins initialized");
+}
+
 void app_main(void)
 {
     esp_err_t ret;
@@ -376,6 +464,9 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+    
+    // Initialize motor driver GPIO pins
+    motor_driver_init();
     
     // Initialize WiFi AP
     wifi_init_softap();

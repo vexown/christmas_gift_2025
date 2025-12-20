@@ -47,12 +47,9 @@ typedef struct {
     const char *name;
 } authorized_card_t;
 
-static const authorized_card_t authorized_cards[] = {
-    // Example UIDs - replace with your actual card UIDs
-    { .uid = {0x04, 0x5A, 0x3B, 0x2A}, .uid_len = 4, .name = "Master Card" },
-    { .uid = {0x12, 0x34, 0x56, 0x78}, .uid_len = 4, .name = "User Card 1" },
-    { .uid = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00}, .uid_len = 7, .name = "User Card 2" },
-    // Add more authorized cards here
+static const authorized_card_t authorized_cards[] = 
+{
+    { .uid = {0xFA, 0x85, 0xC8, 0x01}, .uid_len = 4, .name = "RaindeerCard" },
 };
 
 #define NUM_AUTHORIZED_CARDS (sizeof(authorized_cards) / sizeof(authorized_card_t))
